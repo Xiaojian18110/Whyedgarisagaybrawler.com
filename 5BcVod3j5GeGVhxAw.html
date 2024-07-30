@@ -1,0 +1,296 @@
+<html><head><base href="https://pinball-raytraced.example.com/"><title>Ray-Traced Pinball</title>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<style>
+body, html {
+    margin: 0;
+    padding: 0;
+    width: 100%;
+    height: 100%;
+    overflow: hidden;
+    font-family: Arial, sans-serif;
+}
+#gameCanvas {
+    width: 100%;
+    height: 100%;
+    display: block;
+}
+#loadingScreen {
+    position: fixed;
+    top: 0;
+    left: 0;
+    width: 100%;
+    height: 100%;
+    background-color: rgba(0, 0, 0, 0.8);
+    display: flex;
+    justify-content: center;
+    align-items: center;
+    color: white;
+    font-size: 24px;
+    z-index: 1000;
+}
+#scoreDisplay {
+    position: fixed;
+    top: 10px;
+    left: 10px;
+    color: white;
+    font-size: 18px;
+    z-index: 100;
+}
+</style>
+</head>
+<body>
+<div id="loadingScreen">Loading Ray-Traced Pinball...</div>
+<div id="scoreDisplay">Score: <span id="score">0</span></div>
+<canvas id="gameCanvas"></canvas>
+
+<script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/three@0.128.0/examples/js/postprocessing/EffectComposer.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/three@0.128.0/examples/js/postprocessing/RenderPass.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/three@0.128.0/examples/js/postprocessing/ShaderPass.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/three@0.128.0/examples/js/shaders/CopyShader.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/three@0.128.0/examples/js/controls/OrbitControls.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/cannon@0.6.2/build/cannon.min.js"></script>
+
+<script>
+let scene, camera, renderer, world, ball, flippers, plunger, bumpers, composer;
+let score = 0;
+
+function init() {
+    // Set up Three.js scene
+    scene = new THREE.Scene();
+    camera = new THREE.PerspectiveCamera(75, window.innerWidth / window.innerHeight, 0.1, 1000);
+    camera.position.set(0, 5, 10);
+
+    renderer = new THREE.WebGLRenderer({ canvas: document.getElementById('gameCanvas'), antialias: true });
+    renderer.setSize(window.innerWidth, window.innerHeight);
+    renderer.shadowMap.enabled = true;
+    renderer.shadowMap.type = THREE.PCFSoftShadowMap;
+
+    // Set up lighting
+    const ambientLight = new THREE.AmbientLight(0x404040);
+    scene.add(ambientLight);
+
+    const directionalLight = new THREE.DirectionalLight(0xffffff, 0.5);
+    directionalLight.position.set(1, 1, 1);
+    directionalLight.castShadow = true;
+    scene.add(directionalLight);
+
+    // Set up physics world
+    world = new CANNON.World();
+    world.gravity.set(0, -9.82, 0);
+
+    // Create pinball table
+    createTable();
+    createBall();
+    createFlippers();
+    createPlunger();
+    createBumpers();
+
+    // Set up ray-tracing
+    setupRayTracing();
+
+    // Set up controls
+    const controls = new THREE.OrbitControls(camera, renderer.domElement);
+    controls.enableDamping = true;
+    controls.dampingFactor = 0.25;
+    controls.screenSpacePanning = false;
+    controls.maxPolarAngle = Math.PI / 2;
+
+    // Remove loading screen
+    document.getElementById('loadingScreen').style.display = 'none';
+
+    // Start game loop
+    animate();
+}
+
+function createTable() {
+    const tableGeometry = new THREE.BoxGeometry(10, 0.5, 20);
+    const tableMaterial = new THREE.MeshStandardMaterial({ color: 0x00ff00 });
+    const tableMesh = new THREE.Mesh(tableGeometry, tableMaterial);
+    tableMesh.position.set(0, -0.25, 0);
+    tableMesh.receiveShadow = true;
+    scene.add(tableMesh);
+
+    const tableShape = new CANNON.Box(new CANNON.Vec3(5, 0.25, 10));
+    const tableBody = new CANNON.Body({ mass: 0 });
+    tableBody.addShape(tableShape);
+    tableBody.position.set(0, -0.25, 0);
+    world.addBody(tableBody);
+}
+
+function createBall() {
+    const ballGeometry = new THREE.SphereGeometry(0.2, 32, 32);
+    const ballMaterial = new THREE.MeshStandardMaterial({ color: 0xffffff });
+    ball = new THREE.Mesh(ballGeometry, ballMaterial);
+    ball.castShadow = true;
+    scene.add(ball);
+
+    const ballShape = new CANNON.Sphere(0.2);
+    const ballBody = new CANNON.Body({ mass: 1 });
+    ballBody.addShape(ballShape);
+    ballBody.position.set(0, 5, 8);
+    world.addBody(ballBody);
+
+    ball.userData.body = ballBody;
+}
+
+function createFlippers() {
+    flippers = [];
+    const flipperGeometry = new THREE.BoxGeometry(2, 0.5, 0.5);
+    const flipperMaterial = new THREE.MeshStandardMaterial({ color: 0xff0000 });
+
+    for (let i = 0; i < 2; i++) {
+        const flipper = new THREE.Mesh(flipperGeometry, flipperMaterial);
+        flipper.position.set(i === 0 ? -2 : 2, 0.5, 7);
+        flipper.castShadow = true;
+        scene.add(flipper);
+
+        const flipperShape = new CANNON.Box(new CANNON.Vec3(1, 0.25, 0.25));
+        const flipperBody = new CANNON.Body({ mass: 1 });
+        flipperBody.addShape(flipperShape);
+        flipperBody.position.copy(flipper.position);
+        world.addBody(flipperBody);
+
+        flipper.userData.body = flipperBody;
+        flippers.push(flipper);
+    }
+}
+
+function createPlunger() {
+    const plungerGeometry = new THREE.CylinderGeometry(0.2, 0.2, 1, 32);
+    const plungerMaterial = new THREE.MeshStandardMaterial({ color: 0xffff00 });
+    plunger = new THREE.Mesh(plungerGeometry, plungerMaterial);
+    plunger.position.set(0, 0.5, 9);
+    plunger.castShadow = true;
+    scene.add(plunger);
+
+    const plungerShape = new CANNON.Cylinder(0.2, 0.2, 1, 32);
+    const plungerBody = new CANNON.Body({ mass: 1 });
+    plungerBody.addShape(plungerShape);
+    plungerBody.position.copy(plunger.position);
+    world.addBody(plungerBody);
+
+    plunger.userData.body = plungerBody;
+}
+
+function createBumpers() {
+    bumpers = [];
+    const bumperGeometry = new THREE.CylinderGeometry(0.5, 0.5, 1, 32);
+    const bumperMaterial = new THREE.MeshStandardMaterial({ color: 0x0000ff });
+
+    for (let i = 0; i < 3; i++) {
+        const bumper = new THREE.Mesh(bumperGeometry, bumperMaterial);
+        bumper.position.set(-2 + i * 2, 0.5, 0);
+        bumper.castShadow = true;
+        scene.add(bumper);
+
+        const bumperShape = new CANNON.Cylinder(0.5, 0.5, 1, 32);
+        const bumperBody = new CANNON.Body({ mass: 0 });
+        bumperBody.addShape(bumperShape);
+        bumperBody.position.copy(bumper.position);
+        world.addBody(bumperBody);
+
+        bumper.userData.body = bumperBody;
+        bumpers.push(bumper);
+    }
+}
+
+function setupRayTracing() {
+    composer = new THREE.EffectComposer(renderer);
+    const renderPass = new THREE.RenderPass(scene, camera);
+    composer.addPass(renderPass);
+
+    const rayTracingPass = new THREE.ShaderPass({
+        uniforms: {
+            tDiffuse: { value: null },
+            resolution: { value: new THREE.Vector2(window.innerWidth, window.innerHeight) },
+            cameraPosition: { value: camera.position },
+            cameraMatrix: { value: camera.matrixWorld }
+        },
+        vertexShader: `
+            varying vec2 vUv;
+            void main() {
+                vUv = uv;
+                gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.0);
+            }
+        `,
+        fragmentShader: `
+            uniform sampler2D tDiffuse;
+            uniform vec2 resolution;
+            uniform vec3 cameraPosition;
+            uniform mat4 cameraMatrix;
+            varying vec2 vUv;
+
+            void main() {
+                vec2 uv = gl_FragCoord.xy / resolution.xy;
+                vec3 rayOrigin = cameraPosition;
+                vec3 rayDirection = normalize((cameraMatrix * vec4(uv * 2.0 - 1.0, -1.0, 1.0)).xyz);
+
+                // Simplified ray-tracing logic
+                vec3 color = texture2D(tDiffuse, vUv).rgb;
+                float t = 0.0;
+                for (int i = 0; i < 100; i++) {
+                    vec3 position = rayOrigin + rayDirection * t;
+                    // Add your ray-tracing logic here
+                    // For simplicity, we'll just add some fake reflections
+                    color += vec3(0.01) * float(i);
+                    t += 0.1;
+                }
+
+                gl_FragColor = vec4(color, 1.0);
+            }
+        `
+    });
+    composer.addPass(rayTracingPass);
+}
+
+function animate() {
+    requestAnimationFrame(animate);
+
+    world.step(1 / 60);
+
+    // Update positions of objects
+    ball.position.copy(ball.userData.body.position);
+    ball.quaternion.copy(ball.userData.body.quaternion);
+
+    flippers.forEach(flipper => {
+        flipper.position.copy(flipper.userData.body.position);
+        flipper.quaternion.copy(flipper.userData.body.quaternion);
+    });
+
+    plunger.position.copy(plunger.userData.body.position);
+    plunger.quaternion.copy(plunger.userData.body.quaternion);
+
+    // Update ray-tracing uniforms
+    composer.passes[1].uniforms.cameraPosition.value.copy(camera.position);
+    composer.passes[1].uniforms.cameraMatrix.value.copy(camera.matrixWorld);
+
+    composer.render();
+}
+
+function onWindowResize() {
+    camera.aspect = window.innerWidth / window.innerHeight;
+    camera.updateProjectionMatrix();
+    renderer.setSize(window.innerWidth, window.innerHeight);
+    composer.setSize(window.innerWidth, window.innerHeight);
+}
+
+window.addEventListener('resize', onWindowResize, false);
+
+document.addEventListener('keydown', (event) => {
+    if (event.key === ' ') {
+        // Activate plunger
+        plunger.userData.body.velocity.set(0, 0, -20);
+    } else if (event.key === 'ArrowLeft') {
+        // Activate left flipper
+        flippers[0].userData.body.applyImpulse(new CANNON.Vec3(0, 5, 0), flippers[0].userData.body.position);
+    } else if (event.key === 'ArrowRight') {
+        // Activate right flipper
+        flippers[1].userData.body.applyImpulse(new CANNON.Vec3(0, 5, 0), flippers[1].userData.body.position);
+    }
+});
+
+init();
+</script>
+</body></html>
